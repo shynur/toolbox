@@ -1,6 +1,92 @@
 // @ts-check
 
-export async function makeProcTree_Linux() {
+/**
+ *
+ * @param {number} pid
+ */
+async function readProcDirOf(pid) {
+    const {readFile, realpath} = await import('node:fs/promises')
+
+    /**
+     * @type {{Name: string, Pid: number, PPid: number, VmRSS: number}}
+     *
+     */  // @ts-ignore
+    const status = Object.freeze(
+        Object.fromEntries(
+            (await readFile(`/proc/${pid}/status`, 'utf-8'))
+                .split('\n')
+                .filter(Boolean)
+                .map(line => line.split(':', 2).map(s => s.trim()))
+                .filter(([k]) => k)
+                .map(([k, v]) => [
+                    k, (() => {
+                        switch (k) {
+                            case 'Pid': return +v
+                            case 'PPid': return +v
+                            case 'VmRSS': {
+                                if (v.endsWith('kB'))
+                                    return parseInt(v) * 1024
+                                return +v
+                            }
+                            default: return v
+                        }
+                    })()
+                ])
+        )
+    )
+
+    const cmdline = (
+        await readFile(`/proc/${pid}/cmdline`, 'utf-8')
+    ).slice(0, -1).split('\x00')
+
+    const comm = (await readFile(`/proc/${pid}/comm`, 'utf-8')).trim()
+
+    const io = Object.freeze(
+        Object.fromEntries(
+            (await readFile(`/proc/${pid}/io`, 'ascii'))
+                .split('\n')
+                .filter(Boolean)
+                .map(line => line.split(':', 2))
+                .map(([k, v]) => [k, +v])
+        )
+    )
+
+    const cwd = await realpath(`/proc/${pid}/cwd`)
+
+    return {
+        status, cmdline, comm, io, cwd,
+    }
+}
+
+export async function getAllProcDirs_Linux() {
+    const {readdir} = await import('node:fs/promises')
+
+    /**
+     * @type {Map<number, {timestamp: number, dir: ReturnType<readProcDirOf>}}
+     */
+    const dirOf = new Map
+    await Promise.allSettled(
+        (await readdir('/proc'))
+            .filter(name => /^\d+$/.test(name))
+            .map(Number)
+            .map(
+                async pid => dirOf.set(
+                    pid, {
+                        timestamp: Date.now()/1e3,
+                        // @ts-ignore
+                        dir: await readProcDirOf(pid)
+                    }
+                )
+            )
+    )
+
+    return dirOf
+}
+
+
+// ------------
+
+async function makeProcTree_Linux() {
     const {readFile, readdir} = await import('node:fs/promises')
 
     const pids = (await readdir('/proc')).filter(name => /^\d+$/.test(name)).map(Number)
