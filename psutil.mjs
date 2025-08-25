@@ -1,5 +1,25 @@
 // @ts-check
 
+export async function makeProcTree_Linux() {
+    const {readFile, readdir} = await import('node:fs/promises')
+
+    const pids = (await readdir('/proc')).filter(name => /^\d+$/.test(name)).map(Number)
+
+    const parent_of = new Map
+    await Promise.all(
+        pids.map(
+            async pid => {
+                const status_file = await readFile(`/proc/${pid}/status`, 'ascii')
+                // @ts-ignore
+                const ppid = +(/^\s*PPid:\s*(\d+)\s*$/m.exec(status_file)[1])
+                parent_of.set(pid, ppid)
+            }
+        )
+    )
+
+    return parent_of
+}
+
 /**
  * 递归构建进程树, 读取 `/proc/<PID>/task/<PID>/children`.
  * @param {number} pid
@@ -20,9 +40,10 @@ export async function getProcessTree_Linux(pid) {
         children: []
     }
 
-    const children_pids = (
-        await readFile(`/proc/${pid}/task/${pid}/children`, {encoding: 'ascii'})
-    ).split(/\s+/).filter(Boolean).map(Number)
+    const children_pids =
+        Array.from((await makeProcTree_Linux()).entries())
+            .filter(([, ppid]) => ppid === pid)
+            .map(([pid]) => pid)
 
     await Promise.all(
         children_pids.map(
