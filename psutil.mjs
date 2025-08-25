@@ -58,11 +58,11 @@ async function readProcDirOf(pid) {
     }
 }
 
-export async function getAllProcDirs_Linux() {
+async function getAllProcDirs_Linux() {
     const {readdir} = await import('node:fs/promises')
 
     /**
-     * @type {Map<number, {timestamp: number, dir: ReturnType<readProcDirOf>}}
+     * @type {Map<number, Awaited<ReturnType<readProcDirOf>>>}
      */
     const dirOf = new Map
     await Promise.allSettled(
@@ -70,124 +70,57 @@ export async function getAllProcDirs_Linux() {
             .filter(name => /^\d+$/.test(name))
             .map(Number)
             .map(
-                async pid => dirOf.set(
-                    pid, {
-                        timestamp: Date.now()/1e3,
-                        // @ts-ignore
-                        dir: await readProcDirOf(pid)
-                    }
-                )
+                async pid => dirOf.set(pid, await readProcDirOf(pid))
             )
     )
 
     return dirOf
 }
 
-
-// ------------
-
-async function makeProcTree_Linux() {
-    const {readFile, readdir} = await import('node:fs/promises')
-
-    const pids = (await readdir('/proc')).filter(name => /^\d+$/.test(name)).map(Number)
-
-    const parent_of = new Map
-    await Promise.all(
-        pids.map(
-            async pid => {
-                const status_file = await readFile(`/proc/${pid}/status`, 'ascii')
-                // @ts-ignore
-                const ppid = +(/^\s*PPid:\s*(\d+)\s*$/m.exec(status_file)[1])
-                parent_of.set(pid, ppid)
-            }
-        )
-    )
-
-    return parent_of
-}
-
-/**
- * 递归构建进程树, 读取 `/proc/<PID>/task/<PID>/children`.
- * @param {number} pid
- * @return {Promise<Process>}
- */
-export async function getProcessTree_Linux(pid) {
-    const {readFile} = await import('node:fs/promises')
-
-    /** @typedef {Object} Process */
-    const root = {
-        PID: pid,
-        *[Symbol.iterator]() {
-            yield this
-            for (const proc of this.children)
-                yield* proc
-        },
-        /** @type {Process[]} */
-        children: []
-    }
-
-    const children_pids =
-        Array.from((await makeProcTree_Linux()).entries())
-            .filter(([, ppid]) => ppid === pid)
-            .map(([pid]) => pid)
-
-    await Promise.all(
-        children_pids.map(
-            async child =>
-                root.children.push(await getProcessTree_Linux(child))
-        )
-    )
-
-    return root
-}
-
-/**
- *
- * @param {string} variable - getconf 的 variable 参数
- * @return {Promise<string>}
- */
-export async function getconf_Linux(variable) {
-    const {promisify} = await import('node:util')
-    const {execFile} = await import('node:child_process')
-
-    const {stdout} = await promisify(execFile)('getconf', [variable])
-    return stdout.trim()
-}
-
 /**
  * @param {number} pid
  */
-export async function getProcessStatus_Linux(pid) {
-    const {readFile} = require('node:fs/promises')
+export async function makeProcTree_Linux(pid) {
+    const dir_of = await getAllProcDirs_Linux()
 
-    const rss_bytes =
-        +(await readFile(`/proc/${pid}/statm`, 'ascii')).trim().split(/\s+/)[1]
-    * +(await getconf_Linux('PAGESIZE'))
+    /**
+     * @typedef {Object} ProcessTree
+     * @prop {Awaited<ReturnType<readProcDirOf>>} self
+     * @prop {ProcessTree[]} children
+     */
 
-    const stat = (await readFile(`/proc/${pid}/stat`, 'ascii')).trim().split(/\s+/)
-    const executable = stat[1].slice(1, -1)
-    const cpu_seconds = (+stat[13] + +stat[14]) / +(await getconf_Linux('CLK_TCK'))
-
-    const io = Object.fromEntries(
-        (await readFile(`/proc/${pid}/io`, 'ascii'))
-            .trim()
-            .split('\n')
-            .map(
-                line => {
-                    const [k, v] = line.split(':').map(s => s.trim())
-                    return [k, +v]
+    /**
+     * @type {Map<number, ProcessTree>}
+     */
+    const node_of = new Map
+    for (const [pid, dir] of dir_of)
+        node_of.set(pid, {
+            self: dir,
+            children: [],
+            // @ts-ignore
+            *[Symbol.iterator]() {
+                yield this.self
+                for (const child of this.children) {
+                    // @ts-ignore
+                    yield* child
                 }
-            )
-    )
-
-    const cmdline = (await readFile(`/proc/${pid}/cmdline`, 'ascii')).split('\0')[0]
-
-    return {
-        rss_bytes, io, cpu_seconds, cmdline, executable
+            }
+        })
+    for (const [pid, node] of node_of) {
+        // @ts-ignore
+        const ppid = dir_of.get(pid).status.PPid
+        if (!node_of.has(ppid))
+            continue
+        if (ppid === pid)
+            continue
+        // @ts-ignore
+        node_of.get(ppid).children.push(node)
     }
+
+    return /** @type {ProcessTree & Iterable<Awaited<ReturnType<readProcDirOf>>>} */ (node_of.get(pid))
 }
 
-export async function mytop(pid, interval_seconds=1) {
+export function mytop(pid, interval_seconds=3) {
     console.log('%CPU\tRSS (MB)\tRead (KB)\tWrite (KB)\tTime')
 
     let last_sample = null
