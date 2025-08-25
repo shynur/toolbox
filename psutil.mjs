@@ -59,16 +59,20 @@ async function readProcDirOf(pid) {
     const stat = (await readFile(`/proc/${pid}/stat`, 'utf-8')).trim().split(' ')
 
     return {
-        stat: Object.freeze({
-            pid: +stat[0], comm: stat[1].slice(1, -1), state: stat[2], ppid: +stat[3],
-            utime: +stat[13], stime: +stat[14], cutime: stat[15], cstime: stat[16],
-            priority: +stat[17], nice: +stat[18], num_threads: +stat[19],
-            starttime: +stat[21],
-            vsize: +stat[22], rss: +stat[23],
-            processor: +stat[38],
-            rt_priority: +stat[39], policy: +stat[40],
-            exit_code: +stat[51],
-        }),
+        stat: Object.freeze(
+            Object.assign(
+                stat, {
+                    pid: +stat[0], comm: stat[1].slice(1, -1), state: stat[2], ppid: +stat[3],
+                    utime: +stat[13], stime: +stat[14], cutime: stat[15], cstime: stat[16],
+                    priority: +stat[17], nice: +stat[18], num_threads: +stat[19],
+                    starttime: +stat[21],
+                    vsize: +stat[22], rss: +stat[23],
+                    processor: +stat[38],
+                    rt_priority: +stat[39], policy: +stat[40],
+                    exit_code: +stat[51],
+                }
+            )
+        ),
         status, cmdline, comm, io, cwd,
     }
 }
