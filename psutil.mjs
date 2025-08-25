@@ -51,9 +51,24 @@ async function readProcDirOf(pid) {
         )
     )
 
-    const cwd = await realpath(`/proc/${pid}/cwd`)
+    const cwd = (await realpath(`/proc/${pid}/cwd`)).replace(/\/+$/, '')
+
+    /**
+     * @type {string[]}
+     */
+    const stat = (await readFile(`/proc/${pid}/stat`, 'utf-8')).trim().split(' ')
 
     return {
+        stat: Object.freeze({
+            pid: +stat[0], comm: stat[1].slice(1, -1), state: stat[2], ppid: +stat[3],
+            utime: +stat[13], stime: +stat[14], cutime: stat[15], cstime: stat[16],
+            priority: +stat[17], nice: +stat[18], num_threads: +stat[19],
+            starttime: +stat[21],
+            vsize: +stat[22], rss: +stat[23],
+            processor: +stat[38],
+            rt_priority: +stat[39], policy: +stat[40],
+            exit_code: +stat[51],
+        }),
         status, cmdline, comm, io, cwd,
     }
 }
@@ -120,48 +135,78 @@ export async function makeProcTree_Linux(pid) {
     return /** @type {ProcessTree & Iterable<Awaited<ReturnType<readProcDirOf>>>} */ (node_of.get(pid))
 }
 
-export function mytop(pid, interval_seconds=3) {
+export async function mytop(pid, interval_seconds=3) {
+    const {getconf} = await import('./posix.mjs')
+    const CLK_TCK = +await getconf('CLK_TCK')
+
     console.log('%CPU\tRSS (MB)\tRead (KB)\tWrite (KB)\tTime')
 
-    let last_sample = null
+    /**
+     * @type {[number, Map<number, Awaited<ReturnType<readProcDirOf>>> | null]}
+     */
+    let [last_timestamp, last_sample] = [0, null]
 
-    while (true) {
-        await new Promise(res => setTimeout(res, interval_seconds * 1e3))
-
-        const pstree = await getProcessTree_Linux(pid)
-        const timestamp = Date.now() / 1e3
-        for (const proc of pstree)
-            proc.status = await getProcessStatus_Linux(proc.PID)
-
-        const current_sample = {timestamp, pstree}
+    const log = async () => {
+        const this_timestamp = performance.now() / 1e3
+        const tree = await makeProcTree_Linux(pid)
+        /**
+         * @type {Map<number, Awaited<ReturnType<readProcDirOf>>>}
+         */
+        const this_sample = new Map
+        for (const proc of tree)
+            this_sample.set(proc.status.Pid, proc)
 
         if (last_sample) {
-            const rss_mb = [...current_sample.pstree].reduce(
-                (sum, proc) => sum + proc.status.rss_bytes, 0
-            ) / 1e6
-            const read_kb = (
-                [...current_sample.pstree].reduce((sum, proc) => sum + proc.status.io.read_bytes, 0)
-                - [...last_sample.pstree].reduce((sum, proc) => sum + proc.status.io.read_bytes, 0)
-            ) / 1e3
-            const write_kb = (
-                [...current_sample.pstree].reduce((sum, proc) => sum + proc.status.io.write_bytes, 0)
-                - [...last_sample.pstree].reduce((sum, proc) => sum + proc.status.io.write_bytes, 0)
-            ) / 1e3
+            const cpu_seconds = [
+                ...this_sample.entries()
+            ].reduce(
+                (sum, [pid, dir]) => {
+                    // @ts-ignore
+                    if (!last_sample.has(pid))
+                        return sum
+                    return sum + (
+                        dir.stat.utime + dir.stat.stime
+                        // @ts-ignore
+                        - last_sample.get(pid).stat.utime - last_sample.get(pid).stat.stime
+                    )
+                }, 0
+            ) / CLK_TCK
 
-            const current_cpu_time = new Map(
-                [...current_sample.pstree].map(proc => [proc.PID, proc.status.cpu_seconds])
-            ), last_cpu_time = new Map(
-                [...last_sample.pstree].map(proc => [proc.PID, proc.status.cpu_seconds])
-            )
-            let cpu_seconds = 0
-            for (const [k, v] of current_cpu_time)
-                if (last_cpu_time.has(k))
-                    cpu_seconds += v - last_cpu_time.get(k)
-            const cpu_usage = cpu_seconds / (current_sample.timestamp - last_sample.timestamp) * 100
+            const rss_mb = [...this_sample.values()].reduce(
+                (sum, dir) => sum + dir.status.VmRSS, 0
+            ) / 1e6
+
+            const read_kb = [
+                ...this_sample
+            ].reduce(
+                (sum, [pid, dir]) => {
+                    // @ts-ignore
+                    if (!last_sample.has(pid))
+                        return sum
+                    return sum + (
+                        dir.io.read_bytes
+                        // @ts-ignore
+                        - last_sample.get(pid).io.read_bytes
+                    )
+                }, 0
+            ) / 1e3, write_kb = [
+                ...this_sample
+            ].reduce(
+                (sum, [pid, dir]) => {
+                    // @ts-ignore
+                    if (!last_sample.has(pid))
+                        return sum
+                    return sum + (
+                        dir.io.write_bytes
+                        // @ts-ignore
+                        - last_sample.get(pid).io.write_bytes
+                    )
+                }, 0
+            ) / 1e3
 
             console.log(
                 `${
-                    cpu_usage.toFixed(2)
+                    (cpu_seconds / (this_timestamp - last_timestamp) * 100).toFixed(2)
                 }\t${
                     rss_mb.toFixed(2)
                 }\t\t${
@@ -169,11 +214,16 @@ export function mytop(pid, interval_seconds=3) {
                 }\t\t${
                     write_kb.toFixed(2)
                 }\t\t${
-                    new Date(current_sample.timestamp*1e3).toLocaleTimeString()
+                    new Date().toLocaleTimeString()
                 }`
             )
         }
 
-        last_sample = current_sample
+        [last_timestamp, last_sample] = [this_timestamp, this_sample]
+    }
+
+    while (true) {
+        await log()
+        await new Promise(res => setTimeout(res, interval_seconds * 1e3))
     }
 }
