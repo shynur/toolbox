@@ -1,58 +1,65 @@
+// @ts-check
+
 /**
  * 递归构建进程树, 读取 `/proc/<PID>/task/<PID>/children`.
  * @param {number} pid
- * @returns {object}
- * ```js
- * {
- *   PID: <PID>,
- *   subprocesses: [ ... ]
- * }
- * ```
+ * @return {Promise<Process>}
  */
 export async function getProcessTree_Linux(pid) {
-    // Node.js
-    const {readFile} = await import('fs/promises')
+    const {readFile} = await import('node:fs/promises')
 
+    /** @typedef {Object} Process */
     const root = {
+        PID: pid,
         *[Symbol.iterator]() {
             yield this
-            for (const proc of this.subprocesses)
+            for (const proc of this.children)
                 yield* proc
         },
-        PID: pid,
-        subprocesses: []
+        /** @type {Process[]} */
+        children: []
     }
 
-    const subpids = (
+    const children_pids = (
         await readFile(`/proc/${pid}/task/${pid}/children`, {encoding: 'ascii'})
     ).split(/\s+/).filter(Boolean).map(Number)
 
-    for (const child of subpids)
-        root.subprocesses.push(await getProcessTree_Linux(child))
+    await Promise.all(
+        children_pids.map(
+            async child =>
+                root.children.push(await getProcessTree_Linux(child))
+        )
+    )
 
     return root
 }
 
+/**
+ *
+ * @param {string} variable - getconf 的 variable 参数
+ * @return {Promise<string>}
+ */
 export async function getconf_Linux(variable) {
-    // Node.js
-    const {promisify} = await import('util')
-    const {execFile} = await import('child_process')
+    const {promisify} = await import('node:util')
+    const {execFile} = await import('node:child_process')
 
     const {stdout} = await promisify(execFile)('getconf', [variable])
     return stdout.trim()
 }
 
+/**
+ * @param {number} pid
+ */
 export async function getProcessStatus_Linux(pid) {
-    // Node.js
-    const {readFile} = require('fs/promises')
+    const {readFile} = require('node:fs/promises')
 
-    const rss_bytes = (
+    const rss_bytes =
         +(await readFile(`/proc/${pid}/statm`, 'ascii')).trim().split(/\s+/)[1]
-    ) * (await getconf_Linux('PAGESIZE'))
+    * +(await getconf_Linux('PAGESIZE'))
 
     const stat = (await readFile(`/proc/${pid}/stat`, 'ascii')).trim().split(/\s+/)
     const executable = stat[1].slice(1, -1)
-    const cpu_seconds = (+stat[13] + +stat[14]) / (await getconf_Linux('CLK_TCK'))
+    const cpu_seconds = (+stat[13] + +stat[14]) / +(await getconf_Linux('CLK_TCK'))
 
     const io = Object.fromEntries(
         (await readFile(`/proc/${pid}/io`, 'ascii'))
