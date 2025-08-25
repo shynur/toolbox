@@ -120,7 +120,15 @@ export async function mytop(pid, interval_seconds=1) {
             const cpu_usage = cpu_seconds / (current_sample.timestamp - last_sample.timestamp) * 100
 
             console.log(
-                `${cpu_usage.toFixed(2)}\t${rss_mb.toFixed(2)}\t\t${read_kb.toFixed(2)}\t\t${write_kb.toFixed(2)}\t\t${
+                `${
+                    cpu_usage.toFixed(2)
+                }\t${
+                    rss_mb.toFixed(2)
+                }\t\t${
+                    read_kb.toFixed(2)
+                }\t\t${
+                    write_kb.toFixed(2)
+                }\t\t${
                     new Date(current_sample.timestamp*1e3).toLocaleTimeString()
                 }`
             )
