@@ -1,79 +1,117 @@
 // @ts-check
 
 /**
- *
  * @param {number} pid
  */
-async function readProcDirOf(pid) {
-    const {readFile, realpath} = await import('node:fs/promises')
+export async function readProcDirOf_Linux(pid) {
+    const {readFile, realpath, readdir} = await import('node:fs/promises')
 
     /**
-     * @type {{Name: string, Pid: number, PPid: number, VmRSS: number}}
-     *
+     * @type {function(string):Promise<{Name: string, Pid: number, PPid: number, VmRSS: number}>}
      */  // @ts-ignore
-    const status = Object.freeze(
-        Object.fromEntries(
-            (await readFile(`/proc/${pid}/status`, 'utf-8'))
-                .split('\n')
-                .filter(Boolean)
-                .map(line => line.split(':', 2).map(s => s.trim()))
-                .filter(([k]) => k)
-                .map(([k, v]) => [
-                    k, (() => {
-                        switch (k) {
-                            case 'Pid': return +v
-                            case 'PPid': return +v
-                            case 'VmRSS': {
-                                if (v.endsWith('kB'))
-                                    return parseInt(v) * 1024
-                                return +v
-                            }
-                            default: return v
+    const parse_status = async path => Object.fromEntries(
+        (await readFile(path, 'utf-8'))
+            .split('\n')
+            .filter(Boolean)
+            .map(line => line.split(':', 2).map(s => s.trim()))
+            .filter(([k]) => k)
+            .map(([k, v]) => [
+                k, (() => {
+                    switch (k) {
+                        case 'Pid': return +v
+                        case 'PPid': return +v
+                        case 'VmRSS': {
+                            if (v.endsWith('kB'))
+                                return parseInt(v) * 1024
+                            return +v
                         }
-                    })()
-                ])
-        )
+                        default: return v
+                    }
+                })()
+            ])
     )
 
-    const cmdline = (
-        await readFile(`/proc/${pid}/cmdline`, 'utf-8')
+    /**
+     * @param {string} path
+     */
+    const parse_cmdline = async path => (
+        await readFile(path, 'utf-8')
     ).slice(0, -1).split('\x00')
 
-    const comm = (await readFile(`/proc/${pid}/comm`, 'utf-8')).trim()
+    /**
+     * @param {string} path
+     */
+    const parse_comm = async path => (
+        await readFile(path, 'utf-8')
+    ).trim()
 
-    const io = Object.freeze(
-        Object.fromEntries(
-            (await readFile(`/proc/${pid}/io`, 'ascii'))
-                .split('\n')
-                .filter(Boolean)
-                .map(line => line.split(':', 2))
-                .map(([k, v]) => [k, +v])
+
+    /**
+     * @param {string} path
+     */
+    const parse_io = async path => Object.fromEntries(
+        (await readFile(path, 'ascii'))
+            .split('\n')
+            .filter(Boolean)
+            .map(line => line.split(':', 2))
+            .map(([k, v]) => [k, +v])
+    )
+
+    /**
+     * @param {string} path
+     */
+    const parse_cwd = async path => (
+        await realpath(path)
+    ).replace(/\/+$/, '')
+
+    /**
+     * @param {string} path
+     */
+    const parse_stat = async path => (
+        await readFile(path, 'utf-8')
+    ).trim().split(' ')
+
+    /**
+     * @param {string} dir
+     */
+    const parse = async dir => {
+        const stat = await parse_stat(`${dir}/stat`)
+        const status = await parse_status(`${dir}/status`)
+        const cmdline = await parse_cmdline(`${dir}/cmdline`)
+        const comm = await parse_comm(`${dir}/comm`)
+        const io = await parse_io(`${dir}/io`)
+        const cwd = await parse_cwd(`${dir}/cwd`)
+        return {
+            stat: {
+                ...stat,
+                pid: +stat[0], comm: stat[1].slice(1, -1), state: stat[2], ppid: +stat[3],
+                utime: +stat[13], stime: +stat[14], cutime: stat[15], cstime: stat[16],
+                priority: +stat[17], nice: +stat[18], num_threads: +stat[19],
+                starttime: +stat[21],
+                vsize: +stat[22], rss: +stat[23],
+                processor: +stat[38],
+                rt_priority: +stat[39], policy: +stat[40],
+                exit_code: +stat[51],
+            },
+            status, cmdline, comm, io, cwd,
+        }
+    }
+
+    /**
+     * @param {string} path
+     */
+    const parse_task = async path => Object.fromEntries(
+        await Promise.all(
+            (await readdir(path))
+                .filter(name => /^\d+$/.test(name))
+                .map(Number)
+                .map(async tid => [tid, await parse(`${path}/${tid}`)])
         )
     )
 
-    const cwd = (await realpath(`/proc/${pid}/cwd`)).replace(/\/+$/, '')
-
-    /**
-     * @type {string[]}
-     */
-    const stat = (await readFile(`/proc/${pid}/stat`, 'utf-8')).trim().split(' ')
-
     return {
-        stat: Object.freeze(
-            Object.assign(
-                stat, {
-                    pid: +stat[0], comm: stat[1].slice(1, -1), state: stat[2], ppid: +stat[3],
-                    utime: +stat[13], stime: +stat[14], cutime: stat[15], cstime: stat[16],
-                    priority: +stat[17], nice: +stat[18], num_threads: +stat[19],
-                    starttime: +stat[21],
-                    vsize: +stat[22], rss: +stat[23],
-                    processor: +stat[38],
-                    rt_priority: +stat[39], policy: +stat[40],
-                    exit_code: +stat[51],
-                }
-            )
-        ),
-        status, cmdline, comm, io, cwd,
+        ...(await parse(`/proc/${pid}`)),
+        task: await parse_task(`/proc/${pid}/task`),
     }
 }
 
@@ -81,7 +119,7 @@ async function getAllProcDirs_Linux() {
     const {readdir} = await import('node:fs/promises')
 
     /**
-     * @type {Map<number, Awaited<ReturnType<readProcDirOf>>>}
+     * @type {Map<number, Awaited<ReturnType<readProcDirOf_Linux>>>}
      */
     const dirOf = new Map
     await Promise.allSettled(
@@ -89,7 +127,7 @@ async function getAllProcDirs_Linux() {
             .filter(name => /^\d+$/.test(name))
             .map(Number)
             .map(
-                async pid => dirOf.set(pid, await readProcDirOf(pid))
+                async pid => dirOf.set(pid, await readProcDirOf_Linux(pid))
             )
     )
 
@@ -104,7 +142,7 @@ export async function makeProcTree_Linux(pid) {
 
     /**
      * @typedef {Object} ProcessTree
-     * @prop {Awaited<ReturnType<readProcDirOf>>} self
+     * @prop {Awaited<ReturnType<readProcDirOf_Linux>>} self
      * @prop {ProcessTree[]} children
      */
 
@@ -136,7 +174,7 @@ export async function makeProcTree_Linux(pid) {
         node_of.get(ppid).children.push(node)
     }
 
-    return /** @type {ProcessTree & Iterable<Awaited<ReturnType<readProcDirOf>>>} */ (node_of.get(pid))
+    return /** @type {ProcessTree & Iterable<Awaited<ReturnType<readProcDirOf_Linux>>>} */ (node_of.get(pid))
 }
 
 export async function mytop(pid, interval_seconds=3) {
@@ -146,7 +184,7 @@ export async function mytop(pid, interval_seconds=3) {
     console.log('%CPU\tRSS (MB)\tRead (KB)\tWrite (KB)\tTime')
 
     /**
-     * @type {[number, Map<number, Awaited<ReturnType<readProcDirOf>>> | null]}
+     * @type {[number, Map<number, Awaited<ReturnType<readProcDirOf_Linux>>> | null]}
      */
     let [last_timestamp, last_sample] = [0, null]
 
@@ -154,7 +192,7 @@ export async function mytop(pid, interval_seconds=3) {
         const this_timestamp = performance.now() / 1e3
         const tree = await makeProcTree_Linux(pid)
         /**
-         * @type {Map<number, Awaited<ReturnType<readProcDirOf>>>}
+         * @type {Map<number, Awaited<ReturnType<readProcDirOf_Linux>>>}
          */
         const this_sample = new Map
         for (const proc of tree)
