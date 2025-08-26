@@ -79,8 +79,8 @@ export async function readProcDirOf_Linux(pid) {
         const status = await parse_status(`${dir}/status`)
         const cmdline = await parse_cmdline(`${dir}/cmdline`)
         const comm = await parse_comm(`${dir}/comm`)
-        const io = await parse_io(`${dir}/io`)
-        const cwd = await parse_cwd(`${dir}/cwd`)
+        const io = await parse_io(`${dir}/io`).catch(() => null)  // io 没权限读取的话就算了.
+        const cwd = await parse_cwd(`${dir}/cwd`).catch(() => null)  // cwd 没权限读取的话就算了.
         return {
             stat: {
                 ...stat,
@@ -115,7 +115,7 @@ export async function readProcDirOf_Linux(pid) {
     }
 }
 
-async function getAllProcDirs_Linux() {
+export async function getAllProcDirs_Linux() {
     const {readdir} = await import('node:fs/promises')
 
     /**
@@ -127,7 +127,17 @@ async function getAllProcDirs_Linux() {
             .filter(name => /^\d+$/.test(name))
             .map(Number)
             .map(
-                async pid => dirOf.set(pid, await readProcDirOf_Linux(pid))
+                async pid => dirOf.set(
+                    pid,
+                    await (async () => {
+                        try {
+                            return await readProcDirOf_Linux(pid)
+                        } catch (e) {
+                            console.error(e)
+                            throw e
+                        }
+                    })()
+                )
             )
     )
 
@@ -225,6 +235,8 @@ export async function mytop(pid, interval_seconds=3) {
                     // @ts-ignore
                     if (!last_sample.has(pid))
                         return sum
+                    if (dir.io === null)
+                        return sum
                     return sum + (
                         dir.io.read_bytes
                         // @ts-ignore
@@ -237,6 +249,8 @@ export async function mytop(pid, interval_seconds=3) {
                 (sum, [pid, dir]) => {
                     // @ts-ignore
                     if (!last_sample.has(pid))
+                        return sum
+                    if (dir.io === null)
                         return sum
                     return sum + (
                         dir.io.write_bytes
