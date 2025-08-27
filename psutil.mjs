@@ -115,7 +115,7 @@ export async function readProcDirOf_Linux(pid) {
     }
 }
 
-export async function getAllProcDirs_Linux() {
+async function getAllProcDirs_Linux() {
     const {readdir} = await import('node:fs/promises')
 
     /**
@@ -187,7 +187,11 @@ export async function makeProcTree_Linux(pid) {
     return /** @type {ProcessTree & Iterable<Awaited<ReturnType<readProcDirOf_Linux>>>} */ (node_of.get(pid))
 }
 
-export async function mytop(pid, interval_seconds=3) {
+/**
+ * Usage:
+ *   node --input-type=module -e "`cat ./psutil.mjs`;await mytop(process.pid, 5)"  # bash
+ */
+async function mytop(pid, interval_seconds=3) {
     const {getconf} = await import('./posix.mjs')
     const CLK_TCK = +await getconf('CLK_TCK')
 
